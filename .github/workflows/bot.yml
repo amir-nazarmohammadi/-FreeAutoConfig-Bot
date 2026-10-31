@@ -1,20 +1,42 @@
 name: FreeAutoConfig Bot
 
+# ────────────────────────────────────────────────────────────────
+# چرا این فایل این‌طور نوشته شده؟
+#
+# کرون در GitHub Actions یک تایمر دقیق نیست؛ یک صفِ best-effort است.
+# «حداقل بازه ۵ دقیقه» یعنی حداکثر هر ۵ دقیقه، نه دقیقاً هر ۵ دقیقه:
+# موقع بار زیاد، اجراها تأخیر می‌خورند یا کامل drop می‌شوند و هیچ
+# خطایی هم ثبت نمی‌شود. برای همین این فایل به کرون تکیه نمی‌کند.
+#
+# راه‌حل: یک job طولانی که خودش داخلش هر ۵ دقیقه ربات را اجرا می‌کند.
+# کرون فقط نقش «زنده‌کننده» را دارد: اگر job تمام یا kill شود،
+# حداکثر تا ۳۰ دقیقه بعد یک اجرای تازه شروع می‌شود.
+# نتیجه: با ۲ تریگر موفق در روز هم ربات ۲۴ ساعته بالا می‌ماند.
+# ────────────────────────────────────────────────────────────────
+
 on:
   workflow_dispatch:
   push:
     branches:
       - main
   schedule:
-      - cron: '*/5 * * * *'
+    # فقط نگه‌دارنده؛ فرکانس واقعی اجرای ربات داخل job است.
+    - cron: '11,41 * * * *'
 
 permissions:
   contents: read
 
+# هیچ‌وقت دو اجرا همزمان نداشته باشیم تا پست‌ها تکراری نشوند.
+# اجراهای در صف با هم جایگزین می‌شوند (صف بی‌نهایت تشکیل نمی‌شود).
+concurrency:
+  group: freeautoconfig-bot
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # سقف هر job در گیت‌هاب ۶ ساعت (۳۶۰ دقیقه) است؛ حاشیه امن نگه می‌داریم.
+    timeout-minutes: 355
 
     steps:
       - name: Checkout repository
@@ -28,14 +50,36 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run VPN config bot
+      - name: Run bots in self-sustaining loop
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TARGET_CHANNEL: '@FreeAutoConfig'
-        run: python bot.py
+        run: |
+          INTERVAL=300          # فاصله بین چرخه‌ها (ثانیه) = ۵ دقیقه
+          RUN_FOR=$((340*60))   # ۵ ساعت و ۴۰ دقیقه
+          START=$SECONDS
+          CYCLE=0
 
-      - name: Run proxy bot
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TARGET_CHANNEL: '@FreeAutoConfig'
-        run: python proxy_bot.py
+          while [ $((SECONDS - START)) -lt $RUN_FOR ]; do
+            CYCLE=$((CYCLE+1))
+            CYCLE_START=$SECONDS
+            echo "===== cycle $CYCLE | $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+
+            # اگر کد روی main عوض شده باشد، حلقه را تمام کن تا نسخه تازه اجرا شود.
+            REMOTE_SHA=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f1)
+            if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$GITHUB_SHA" ]; then
+              echo "کد جدید روی main منتشر شد؛ حلقه تمام می‌شود تا اجرای بعدی کد تازه را بردارد."
+              break
+            fi
+
+            timeout 240 python bot.py || echo "::warning::bot.py با کد خروج $? تمام شد"
+            timeout 240 python proxy_bot.py || echo "::warning::proxy_bot.py با کد خروج $? تمام شد"
+
+            ELAPSED=$((SECONDS - CYCLE_START))
+            SLEEP=$((INTERVAL - ELAPSED))
+            if [ "$SLEEP" -lt 10 ]; then SLEEP=10; fi
+            echo "cycle $CYCLE در ${ELAPSED}s تمام شد؛ ${SLEEP}s صبر می‌کنیم."
+            sleep "$SLEEP"
+          done
+
+          echo "حلقه بعد از $CYCLE چرخه تمام شد؛ تریگر بعدی اجرای تازه را شروع می‌کند."

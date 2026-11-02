@@ -55,7 +55,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TARGET_CHANNEL: '@FreeAutoConfig'
         run: |
-          INTERVAL=300          # فاصله بین چرخه‌ها (ثانیه) = ۵ دقیقه
+          INTERVAL= 1200         # فاصله بین چرخه‌ها 
           RUN_FOR=$((340*60))   # ۵ ساعت و ۴۰ دقیقه
           START=$SECONDS
           CYCLE=0
